@@ -18,16 +18,15 @@ const TX_ADDR: u64 = 0xA2891FFF6A;
 const NOP: [u8; 1] = commands::Nop::bytes();
 const W_RF_CH: [u8; 2] = commands::WRegister(registers::RfCh::new().with_rf_ch(110)).bytes();
 const R_RF_CH: [u8; 2] = commands::RRegister::<registers::RfCh>::bytes();
+const W_RF_SETUP: [u8; 2] =
+    commands::WRegister(registers::RfSetup::new().with_rf_dr(false)).bytes();
+const R_RF_SETUP: [u8; 2] = commands::RRegister::<registers::RfSetup>::bytes();
 const W_TX_ADDR: [u8; 6] =
     commands::WRegister(registers::TxAddr::<5>::new().with_tx_addr(TX_ADDR)).bytes();
 const R_TX_ADDR: [u8; 6] = commands::RRegister::<registers::TxAddr<5>>::bytes();
 const W_RX_ADDR_P0: [u8; 6] =
     commands::WRegister(registers::RxAddrP0::<5>::new().with_rx_addr_p0(TX_ADDR)).bytes();
 const R_RX_ADDR_P0: [u8; 6] = commands::RRegister::<registers::RxAddrP0<5>>::bytes();
-const ACTIVATE: [u8; 2] = commands::Activate::bytes();
-const W_FEATURE: [u8; 2] =
-    commands::WRegister(registers::Feature::new().with_en_dyn_ack(true)).bytes();
-const R_FEATURE: [u8; 2] = commands::RRegister::<registers::Feature>::bytes();
 const W_CONFIG: [u8; 2] = commands::WRegister(
     registers::Config::new()
         .with_pwr_up(true)
@@ -35,13 +34,15 @@ const W_CONFIG: [u8; 2] = commands::WRegister(
 )
 .bytes();
 const R_CONFIG: [u8; 2] = commands::RRegister::<registers::Config>::bytes();
-const CLEAR_TX_DS: [u8; 2] = commands::WRegister(registers::Status::new().with_tx_ds(true)).bytes();
+const RESET_TX_DS: [u8; 2] = commands::WRegister(registers::Status::new().with_tx_ds(true)).bytes();
+const RESET_MAX_RT: [u8; 2] =
+    commands::WRegister(registers::Status::new().with_max_rt(true)).bytes();
 
 static PAYLOAD: [u8; 32] = [
     b't', b'h', b'e', b' ', b'l', b'a', b'z', b'y', b' ', b'f', b'o', b'x', b' ', b'j', b'u', b'm',
     b'p', b'e', b'd', b' ', b'o', b'v', b'e', b'r', b' ', b't', b'h', b'e', b' ', b'b', b'r', b'o',
 ];
-const W_TX_PL_NOACK: [u8; 33] = commands::WTxPayloadNoack(PAYLOAD).bytes();
+const W_TX_PAYLOAD: [u8; 33] = commands::WTxPayload(PAYLOAD).bytes();
 
 struct SyncPeripheral<P>(UnsafeCell<Option<P>>);
 
@@ -185,7 +186,7 @@ fn USART2() {
             98 => {
                 // b
                 // Write payload
-                send_command(&W_TX_PL_NOACK, dma1, spi1);
+                send_command(&W_TX_PAYLOAD, dma1, spi1);
             }
             99 => {
                 // c
@@ -196,8 +197,13 @@ fn USART2() {
             }
             100 => {
                 // d
-                // Clear TX_DS flag
-                send_command(&CLEAR_TX_DS, dma1, spi1);
+                // Reset TX_DS flag
+                send_command(&RESET_TX_DS, dma1, spi1);
+            }
+            101 => {
+                // e
+                // Reset MAX_RT flag
+                send_command(&RESET_MAX_RT, dma1, spi1);
             }
             _ => (),
         }
@@ -239,7 +245,6 @@ fn DMA1_CH7() {
 fn DMA1_CH2() {
     let dma1 = DMA1_PERIPHERAL.get();
     let spi1 = SPI1_PERIPHERAL.get();
-    let init_commands = INIT_COMMANDS.get();
 
     if dma1.isr().read().tcif2().bit_is_set() {
         dma1.ch2().cr().modify(|_, w| w.en().clear_bit());
@@ -441,13 +446,12 @@ fn main() -> ! {
     let init_commands = INIT_COMMANDS.get();
 
     let _ = init_commands.enqueue(&R_RF_CH);
+    let _ = init_commands.enqueue(&W_RF_SETUP);
+    let _ = init_commands.enqueue(&R_RF_SETUP);
     let _ = init_commands.enqueue(&W_TX_ADDR);
     let _ = init_commands.enqueue(&R_TX_ADDR);
     let _ = init_commands.enqueue(&W_RX_ADDR_P0);
     let _ = init_commands.enqueue(&R_RX_ADDR_P0);
-    let _ = init_commands.enqueue(&ACTIVATE);
-    let _ = init_commands.enqueue(&W_FEATURE);
-    let _ = init_commands.enqueue(&R_FEATURE);
     let _ = init_commands.enqueue(&W_CONFIG);
     let _ = init_commands.enqueue(&R_CONFIG);
 
