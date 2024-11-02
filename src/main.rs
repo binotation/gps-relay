@@ -5,7 +5,7 @@ use core::cell::UnsafeCell;
 use cortex_m_rt::entry;
 use cortex_m_semihosting::hprintln;
 use heapless::spsc::Queue;
-use nrf24l01_commands::{commands, registers};
+use nrf24l01_commands::{commands, commands::Command, registers};
 use panic_semihosting as _; // logs messages to the host stderr; requires a debugger
 use stm32l4::stm32l4x2::{interrupt, Interrupt, Peripherals, DMA1, GPIOA, SPI1, TIM2, USART2};
 
@@ -38,11 +38,42 @@ const RESET_TX_DS: [u8; 2] = commands::WRegister(registers::Status::new().with_t
 const RESET_MAX_RT: [u8; 2] =
     commands::WRegister(registers::Status::new().with_max_rt(true)).bytes();
 
-static PAYLOAD: [u8; 32] = [
-    b't', b'h', b'e', b' ', b'l', b'a', b'z', b'y', b' ', b'f', b'o', b'x', b' ', b'j', b'u', b'm',
-    b'p', b'e', b'd', b' ', b'o', b'v', b'e', b'r', b' ', b't', b'h', b'e', b' ', b'b', b'r', b'o',
+static W_TX_PAYLOAD: [u8; 33] = [
+    commands::WTxPayload::<32>::WORD,
+    b't',
+    b'h',
+    b'e',
+    b' ',
+    b'l',
+    b'a',
+    b'z',
+    b'y',
+    b' ',
+    b'f',
+    b'o',
+    b'x',
+    b' ',
+    b'j',
+    b'u',
+    b'm',
+    b'p',
+    b'e',
+    b'd',
+    b' ',
+    b'o',
+    b'v',
+    b'e',
+    b'r',
+    b' ',
+    b't',
+    b'h',
+    b'e',
+    b' ',
+    b'b',
+    b'r',
+    b'o',
 ];
-const W_TX_PAYLOAD: [u8; 33] = commands::WTxPayload(PAYLOAD).bytes();
+// const W_TX_PAYLOAD: [u8; 33] = commands::WTxPayload(PAYLOAD).bytes();
 
 struct SyncPeripheral<P>(UnsafeCell<Option<P>>);
 
@@ -285,6 +316,10 @@ fn main() -> ! {
 
     let dp = Peripherals::take().unwrap();
 
+    dp.RCC
+        .cr()
+        .write(|w| w.msirange().range200k().msirgsel().set_bit());
+
     // Enable peripheral clocks: DMA1, GPIOA, USART2, TIM2, SPI1
     dp.RCC.ahb1enr().write(|w| w.dma1en().set_bit());
     dp.RCC.ahb2enr().write(|w| w.gpioaen().set_bit());
@@ -374,7 +409,7 @@ fn main() -> ! {
         .write(|w| w.minc().set_bit().tcie().set_bit().dir().set_bit());
 
     // USART2: Configure baud rate 9600
-    dp.USART2.brr().write(|w| unsafe { w.bits(417) }); // 4Mhz / 9600 approx. 417
+    dp.USART2.brr().write(|w| unsafe { w.bits(21) }); // 200khz / 9600 approx. 21
 
     // USART2: enable DMA
     dp.USART2
@@ -437,7 +472,7 @@ fn main() -> ! {
     });
 
     // Set 11us interval
-    dp.TIM2.arr().write(|w| unsafe { w.arr().bits(44) }); // 44 / 4MHz = 11us
+    dp.TIM2.arr().write(|w| unsafe { w.arr().bits(3) }); // 11us * 200khz approx. 3
 
     // Enable TIM2 update interrupt
     dp.TIM2.dier().write(|w| w.uie().set_bit());
