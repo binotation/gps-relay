@@ -2,14 +2,16 @@
 #![no_main]
 
 use core::cell::UnsafeCell;
+use cortex_m::{asm, Peripherals as CorePeripherals};
 use cortex_m_rt::entry;
 use cortex_m_semihosting::hprintln;
 use heapless::spsc::Queue;
 use nrf24l01_commands::{commands, commands::Command, registers};
 use panic_semihosting as _; // logs messages to the host stderr; requires a debugger
-use stm32l4::stm32l4x2::{interrupt, Interrupt, Peripherals, DMA1, GPIOA, SPI1, TIM2, USART2};
+use stm32l4::stm32l4x2::{
+    interrupt, Interrupt, Peripherals, DMA1, EXTI, GPIOA, RTC, SPI1, TIM2, USART2,
+};
 
-const USART2_RDR: u32 = 0x4000_4424;
 const USART2_TDR: u32 = 0x4000_4428;
 const SPI1_DR: u32 = 0x4001_300C;
 const TX_ADDR: u64 = 0xA2891FFF6A;
@@ -98,12 +100,18 @@ unsafe impl Sync for SyncPeripheral<USART2> {}
 unsafe impl Sync for SyncPeripheral<SPI1> {}
 unsafe impl Sync for SyncPeripheral<DMA1> {}
 unsafe impl Sync for SyncPeripheral<TIM2> {}
+unsafe impl Sync for SyncPeripheral<RTC> {}
+unsafe impl Sync for SyncPeripheral<EXTI> {}
+unsafe impl Sync for SyncPeripheral<CorePeripherals> {}
 
 static GPIOA_PERIPHERAL: SyncPeripheral<GPIOA> = SyncPeripheral::new();
 static USART2_PERIPHERAL: SyncPeripheral<USART2> = SyncPeripheral::new();
 static SPI1_PERIPHERAL: SyncPeripheral<SPI1> = SyncPeripheral::new();
 static DMA1_PERIPHERAL: SyncPeripheral<DMA1> = SyncPeripheral::new();
 static TIM2_PERIPHERAL: SyncPeripheral<TIM2> = SyncPeripheral::new();
+static RTC_PERIPHERAL: SyncPeripheral<RTC> = SyncPeripheral::new();
+static EXTI_PERIPHERAL: SyncPeripheral<EXTI> = SyncPeripheral::new();
+static CORE_PERIPHERALS: SyncPeripheral<CorePeripherals> = SyncPeripheral::new();
 
 struct SyncQueue<T, const N: usize>(UnsafeCell<Queue<T, N>>);
 
@@ -182,6 +190,13 @@ fn send_command(command: &[u8], dma1: &mut DMA1, spi1: &mut SPI1) {
     spi1.cr1().modify(|_, w| w.spe().enabled());
 }
 
+#[inline]
+fn pulse_ce(gpioa: &mut GPIOA, tim2: &mut TIM2) {
+    gpioa.bsrr().write(|w| w.bs0().set_bit());
+    // Enable counter, one-pulse mode
+    tim2.cr1().write(|w| w.opm().enabled().cen().enabled());
+}
+
 #[interrupt]
 fn USART2() {
     let gpioa = GPIOA_PERIPHERAL.get();
@@ -189,19 +204,6 @@ fn USART2() {
     let spi1 = SPI1_PERIPHERAL.get();
     let tim2 = TIM2_PERIPHERAL.get();
     let dma1 = DMA1_PERIPHERAL.get();
-
-    // Dequeue bytes off rx buffer and transmit over USART2
-    // if usart2.isr().read().txe().bit_is_set() {
-    //     match rx_buffer.dequeue() {
-    //         Some(byte) => {
-    //             usart2.tdr().write(|w| unsafe { w.tdr().bits(byte) });
-    //             if rx_buffer.is_empty() {
-    //                 usart2.cr1().modify(|_, w| w.txeie().disabled());
-    //             }
-    //         }
-    //         None => usart2.cr1().modify(|_, w| w.txeie().disabled()),
-    //     }
-    // }
 
     // Read incoming bytes from USART2 and queue onto tx buffer
     if usart2.isr().read().rxne().bit_is_set() {
@@ -221,10 +223,7 @@ fn USART2() {
             }
             99 => {
                 // c
-                // pulse CE
-                gpioa.bsrr().write(|w| w.bs0().set_bit());
-                // Enable counter, one-pulse mode
-                tim2.cr1().write(|w| w.opm().enabled().cen().enabled());
+                pulse_ce(gpioa, tim2);
             }
             100 => {
                 // d
@@ -243,15 +242,6 @@ fn USART2() {
         usart2.icr().write(|w| w.orecf().set_bit());
     }
 }
-
-// #[interrupt]
-// fn DMA1_CH6() {
-//     let dma1 = DMA1_PERIPHERAL.get();
-//     if dma1.isr().read().tcif6().bit_is_set() {
-//         dma1.ch6().cr().modify(|_, w| w.en().clear_bit());
-//         dma1.ifcr().write(|w| w.ctcif6().set_bit());
-//     }
-// }
 
 /// USART2 TX DMA stream
 #[interrupt]
@@ -276,6 +266,8 @@ fn DMA1_CH7() {
 fn DMA1_CH2() {
     let dma1 = DMA1_PERIPHERAL.get();
     let spi1 = SPI1_PERIPHERAL.get();
+    let gpioa = GPIOA_PERIPHERAL.get();
+    let tim2 = TIM2_PERIPHERAL.get();
 
     if dma1.isr().read().tcif2().bit_is_set() {
         dma1.ch2().cr().modify(|_, w| w.en().clear_bit());
@@ -284,8 +276,12 @@ fn DMA1_CH2() {
         // Disable SPI1
         spi1.cr1().modify(|_, w| w.spe().clear_bit());
 
+        if dma1.ch3().mar().read().ma() == W_TX_PAYLOAD.as_ptr() as u32 {
+            pulse_ce(gpioa, tim2);
+        }
+
         // Enable USART2 TX DMA
-        dma1.ch7().cr().modify(|_, w| w.en().set_bit());
+        // dma1.ch7().cr().modify(|_, w| w.en().set_bit());
     }
 }
 
@@ -303,10 +299,39 @@ fn DMA1_CH3() {
 fn TIM2() {
     let tim2 = TIM2_PERIPHERAL.get();
     let gpioa = GPIOA_PERIPHERAL.get();
+    let cp = CORE_PERIPHERALS.get();
 
     if tim2.sr().read().uif().bit_is_set() {
         gpioa.bsrr().write(|w| w.br0().set_bit());
-        tim2.sr().write(|w| w.uif().clear_bit())
+        tim2.sr().write(|w| w.uif().clear_bit());
+        unsafe {
+            cp.SCB.scr.write(0b110);
+        }
+    }
+}
+
+#[interrupt]
+fn RTC_WKUP() {
+    let rtc = RTC_PERIPHERAL.get();
+    let gpioa = GPIOA_PERIPHERAL.get();
+    let exti = EXTI_PERIPHERAL.get();
+    let cp = CORE_PERIPHERALS.get();
+    let dma1 = DMA1_PERIPHERAL.get();
+    let spi1 = SPI1_PERIPHERAL.get();
+
+    if rtc.isr().read().wutf().bit_is_set() {
+        rtc.isr().modify(|_, w| w.wutf().clear_bit());
+        exti.pr1().write(|w| w.pr20().clear_bit_by_one());
+        unsafe {
+            cp.SCB.scr.write(0b100);
+        }
+
+        if gpioa.odr().read().odr8().bit_is_set() {
+            gpioa.bsrr().write(|w| w.br8().set_bit());
+        } else {
+            gpioa.bsrr().write(|w| w.bs8().set_bit());
+        }
+        send_command(&W_TX_PAYLOAD, dma1, spi1);
     }
 }
 
@@ -314,6 +339,7 @@ fn TIM2() {
 fn main() -> ! {
     // Device defaults to 4MHz clock
 
+    let cp = cortex_m::Peripherals::take().unwrap();
     let dp = Peripherals::take().unwrap();
 
     dp.RCC
@@ -323,9 +349,16 @@ fn main() -> ! {
     // Enable peripheral clocks: DMA1, GPIOA, USART2, TIM2, SPI1
     dp.RCC.ahb1enr().write(|w| w.dma1en().set_bit());
     dp.RCC.ahb2enr().write(|w| w.gpioaen().set_bit());
-    dp.RCC
-        .apb1enr1()
-        .write(|w| w.usart2en().enabled().tim2en().set_bit());
+    dp.RCC.apb1enr1().write(|w| {
+        w.usart2en()
+            .enabled()
+            .tim2en()
+            .set_bit()
+            .pwren()
+            .set_bit()
+            .rtcapben()
+            .set_bit()
+    });
     dp.RCC.apb2enr().write(|w| w.spi1en().set_bit());
 
     // USART2: A2 (TX), A3 (RX) as AF 7
@@ -348,25 +381,29 @@ fn main() -> ! {
             .alternate()
             .moder7()
             .alternate()
+            .moder8()
+            .output()
     });
-    dp.GPIOA.otyper().write(|w| w.ot0().push_pull());
+    dp.GPIOA
+        .otyper()
+        .write(|w| w.ot0().push_pull().ot8().push_pull());
     // NSS, IRQ are active low
     dp.GPIOA
         .pupdr()
         .write(|w| w.pupdr1().pull_up().pupdr4().pull_up());
     dp.GPIOA.ospeedr().write(|w| {
         w.ospeedr2()
-            .very_high_speed()
+            .low_speed()
             .ospeedr3()
-            .very_high_speed()
+            .low_speed()
             .ospeedr4()
-            .very_high_speed()
+            .low_speed()
             .ospeedr5()
-            .very_high_speed()
+            .medium_speed()
             .ospeedr6()
-            .very_high_speed()
+            .medium_speed()
             .ospeedr7()
-            .very_high_speed()
+            .medium_speed()
     });
     dp.GPIOA.afrl().write(|w| {
         w.afrl2()
@@ -387,12 +424,6 @@ fn main() -> ! {
     dp.DMA1
         .cselr()
         .write(|w| w.c2s().map1().c3s().map1().c6s().map2().c7s().map2());
-
-    // DMA channel 6 USART2 RX
-    // dp.DMA1.ch6().par().write(|w| unsafe { w.pa().bits(USART2_RDR) });
-    // dp.DMA1.ch6().mar().write(|w| unsafe { w.ma().bits(&PAYLOAD as *const [u8; 32] as u32) });
-    // dp.DMA1.ch6().ndtr().write(|w| unsafe { w.bits(32) });
-    // dp.DMA1.ch6().cr().write(|w| w.minc().set_bit().tcie().set_bit());
 
     // DMA channel 7 USART2 TX
     dp.DMA1
@@ -477,6 +508,46 @@ fn main() -> ! {
     // Enable TIM2 update interrupt
     dp.TIM2.dier().write(|w| w.uie().set_bit());
 
+    // Set SleepDeep bit
+    unsafe { cp.SCB.scr.write(0b100) };
+    // Set Stop 2 low-power mode, remove write protection from BDCR
+    dp.PWR
+        .cr1()
+        .write(|w| unsafe { w.lpms().bits(0b010).dbp().set_bit() });
+
+    // Configure RTC, set 5s periodic wake up
+    dp.RCC.csr().write(|w| w.lsion().set_bit());
+    while dp.RCC.csr().read().lsirdy().bit_is_clear() {}
+
+    dp.RCC.bdcr().write(|w| w.rtcsel().lsi().rtcen().set_bit());
+    // Remove write protection from RTC registers
+    dp.RTC.wpr().write(|w| unsafe { w.key().bits(0xCA) });
+    dp.RTC.wpr().write(|w| unsafe { w.key().bits(0x53) });
+
+    // Enter init mode to set prescaler values
+    dp.RTC.isr().write(|w| w.init().set_bit());
+    while dp.RTC.isr().read().initf().bit_is_clear() {}
+    dp.RTC
+        .prer()
+        .write(|w| unsafe { w.prediv_a().bits(127).prediv_s().bits(249) });
+    dp.RTC.isr().write(|w| w.init().clear_bit());
+
+    // Turn off wake-up timer
+    dp.RTC.cr().write(|w| w.wute().clear_bit());
+    while dp.RTC.isr().read().wutwf().bit_is_clear() {}
+
+    // Write wake-up timer registers
+    dp.RTC.wutr().write(|w| unsafe { w.wut().bits(4) });
+    dp.EXTI.rtsr1().write(|w| w.tr20().set_bit());
+    dp.EXTI.imr1().write(|w| w.mr20().set_bit());
+    dp.RTC.cr().write(|w| {
+        unsafe { w.wucksel().bits(0b100) }
+            .wutie()
+            .set_bit()
+            .wute()
+            .set_bit()
+    });
+
     // Initialization commands
     let init_commands = INIT_COMMANDS.get();
 
@@ -492,7 +563,7 @@ fn main() -> ! {
 
     unsafe {
         // Unmask NVIC global interrupts
-        // cortex_m::peripheral::NVIC::unmask(Interrupt::SPI1);
+        cortex_m::peripheral::NVIC::unmask(Interrupt::RTC_WKUP);
         cortex_m::peripheral::NVIC::unmask(Interrupt::USART2);
         cortex_m::peripheral::NVIC::unmask(Interrupt::DMA1_CH2);
         cortex_m::peripheral::NVIC::unmask(Interrupt::DMA1_CH3);
@@ -505,6 +576,9 @@ fn main() -> ! {
     USART2_PERIPHERAL.set(dp.USART2);
     DMA1_PERIPHERAL.set(dp.DMA1);
     TIM2_PERIPHERAL.set(dp.TIM2);
+    RTC_PERIPHERAL.set(dp.RTC);
+    EXTI_PERIPHERAL.set(dp.EXTI);
+    CORE_PERIPHERALS.set(cp);
 
     let dma1 = DMA1_PERIPHERAL.get();
     let spi1 = SPI1_PERIPHERAL.get();
@@ -512,5 +586,7 @@ fn main() -> ! {
     send_command(&W_RF_CH, dma1, spi1);
 
     #[allow(clippy::empty_loop)]
-    loop {}
+    loop {
+        // asm::wfi();
+    }
 }

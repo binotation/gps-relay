@@ -1,3 +1,4 @@
+source register_viewer.py
 target extended-remote :3333
 
 # print demangled symbols
