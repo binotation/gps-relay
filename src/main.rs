@@ -268,6 +268,7 @@ fn DMA1_CH2() {
     let spi1 = SPI1_PERIPHERAL.get();
     let gpioa = GPIOA_PERIPHERAL.get();
     let tim2 = TIM2_PERIPHERAL.get();
+    let init_commands = INIT_COMMANDS.get();
 
     if dma1.isr().read().tcif2().bit_is_set() {
         dma1.ch2().cr().modify(|_, w| w.en().clear_bit());
@@ -280,8 +281,10 @@ fn DMA1_CH2() {
             pulse_ce(gpioa, tim2);
         }
 
-        // Enable USART2 TX DMA
-        // dma1.ch7().cr().modify(|_, w| w.en().set_bit());
+        // Send initialization commands
+        if let Some(command) = init_commands.dequeue() {
+            send_command(command, dma1, spi1);
+        }
     }
 }
 
@@ -491,16 +494,16 @@ fn main() -> ! {
         .write(|w| w.minc().set_bit().dir().set_bit().tcie().set_bit());
 
     // Enable USART, transmitter, receiver and RXNE interrupt
-    dp.USART2.cr1().write(|w| {
-        w.re()
-            .set_bit()
-            .te()
-            .set_bit()
-            .ue()
-            .set_bit()
-            .rxneie()
-            .set_bit()
-    });
+    // dp.USART2.cr1().write(|w| {
+    //     w.re()
+    //         .set_bit()
+    //         .te()
+    //         .set_bit()
+    //         .ue()
+    //         .set_bit()
+    //         .rxneie()
+    //         .set_bit()
+    // });
 
     // Set 11us interval
     dp.TIM2.arr().write(|w| unsafe { w.arr().bits(3) }); // 11us * 200khz approx. 3
@@ -551,15 +554,11 @@ fn main() -> ! {
     // Initialization commands
     let init_commands = INIT_COMMANDS.get();
 
-    let _ = init_commands.enqueue(&R_RF_CH);
     let _ = init_commands.enqueue(&W_RF_SETUP);
-    let _ = init_commands.enqueue(&R_RF_SETUP);
     let _ = init_commands.enqueue(&W_TX_ADDR);
-    let _ = init_commands.enqueue(&R_TX_ADDR);
     let _ = init_commands.enqueue(&W_RX_ADDR_P0);
-    let _ = init_commands.enqueue(&R_RX_ADDR_P0);
     let _ = init_commands.enqueue(&W_CONFIG);
-    let _ = init_commands.enqueue(&R_CONFIG);
+    let _ = init_commands.enqueue(&RESET_MAX_RT);
 
     unsafe {
         // Unmask NVIC global interrupts
