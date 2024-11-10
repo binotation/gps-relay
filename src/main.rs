@@ -436,6 +436,19 @@ fn TIM1_UP_TIM16() {
     }
 }
 
+#[interrupt]
+fn USART1() {
+    let dp = DEVICE_PERIPHERALS.get();
+
+    if dp.USART1.isr().read().rxne().bit_is_set() {
+        let received_byte = dp.USART1.rdr().read().rdr().bits();
+        dp.USART1.tdr().write(|w| unsafe { w.tdr().bits(received_byte) });
+    }
+    if dp.USART1.isr().read().ore().bit_is_set() {
+        dp.USART1.icr().write(|w| w.orecf().set_bit());
+    }
+}
+
 #[entry]
 fn main() -> ! {
     // Device defaults to 4MHz clock
@@ -464,7 +477,7 @@ fn main() -> ! {
     });
     dp.RCC
         .apb2enr()
-        .write(|w| w.spi1en().set_bit().tim16en().set_bit());
+        .write(|w| w.spi1en().set_bit().tim16en().set_bit().usart1en().set_bit());
 
     // USART2: A2 (TX), A3 (RX) as AF 7
     // SPI1: A4 (NSS), A5 (SCK), A6 (MISO), A7 (MOSI) as AF 5
@@ -488,6 +501,8 @@ fn main() -> ! {
             .alternate()
             .moder8()
             .output()
+            .moder9().alternate()
+            .moder10().alternate()
     });
     dp.GPIOA
         .otyper()
@@ -522,6 +537,7 @@ fn main() -> ! {
             .afrl7()
             .af5()
     });
+    dp.GPIOA.afrh().write(|w| w.afrh9().af7().afrh10().af7());
 
     // EXTI
     dp.EXTI.ftsr1().write(|w| w.tr1().set_bit());
@@ -618,9 +634,11 @@ fn main() -> ! {
 
     // USART2: Configure baud rate 9600
     dp.USART2.brr().write(|w| unsafe { w.bits(21) }); // 200khz / 9600 approx. 21
+    dp.USART1.brr().write(|w| unsafe { w.bits(21) });
 
     // USART2: enable DMA RX
     dp.USART2.cr3().write(|w| w.dmar().set_bit());
+    dp.USART1.cr1().write(|w| w.rxneie().set_bit().re().set_bit().te().set_bit().ue().set_bit());
 
     // SPI1: Set FIFO reception threshold to 1/4, enable slave select output, enable DMA
     dp.SPI1.cr2().write(|w| {
@@ -653,6 +671,7 @@ fn main() -> ! {
         cortex_m::peripheral::NVIC::unmask(Interrupt::EXTI1);
         cortex_m::peripheral::NVIC::unmask(Interrupt::TIM6_DACUNDER);
         cortex_m::peripheral::NVIC::unmask(Interrupt::TIM1_UP_TIM16);
+        cortex_m::peripheral::NVIC::unmask(Interrupt::USART1);
     }
     CORE_PERIPHERALS.set(cp);
     DEVICE_PERIPHERALS.set(dp);
