@@ -36,6 +36,7 @@ const W_CONFIG: [u8; 2] = commands::WRegister(
         .with_mask_rx_dr(true),
 )
 .bytes();
+const R_CONFIG: [u8; 2] = commands::RRegister::<registers::Config>::bytes();
 const POWER_DOWN: [u8; 2] =
     commands::WRegister(registers::Config::new().with_pwr_up(false)).bytes();
 const RESET_INTERRUPTS: [u8; 2] =
@@ -231,6 +232,7 @@ fn DMA1_CH2() {
                     if status.max_rt() {
                         unsafe {
                             commands.enqueue_unchecked(&POWER_DOWN);
+                            commands.enqueue_unchecked(&R_CONFIG);
                         }
                         *state = State::ContinueSleep;
                     } else if status.tx_ds() {
@@ -305,6 +307,7 @@ fn DMA1_CH2() {
                                 commands.enqueue_unchecked(&FLUSH_TX);
                                 commands.enqueue_unchecked(&HANDSHAKE);
                                 commands.enqueue_unchecked(&POWER_DOWN);
+                                commands.enqueue_unchecked(&R_CONFIG);
                             }
                             *state = State::BeginSleep;
                         } else if status.tx_ds() {
