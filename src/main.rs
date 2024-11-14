@@ -1,8 +1,9 @@
 #![no_std]
 #![no_main]
 
+use core::arch::asm;
 use cortex_m::{asm, Peripherals as CorePeripherals};
-use cortex_m_rt::entry;
+use cortex_m_rt::{entry, pre_init};
 use gps_relay::sync_cell::{SyncPeripheral, SyncQueue, SyncState};
 use gps_relay::State;
 // use cortex_m_semihosting::hprintln;
@@ -435,6 +436,23 @@ fn TIM1_UP_TIM16() {
         pulse_ce(dp);
         dp.TIM16.sr().write(|w| w.uif().clear_bit());
     }
+}
+
+#[pre_init]
+unsafe fn initialize_ram() {
+    // Copy .rodata to SRAM1
+    asm!(
+        "ldr r0, =__srodata",
+        "ldr r1, =__erodata",
+        "ldr r2, =__sirodata",
+        "0:",
+        "cmp r1, r0",
+        "beq 1f",
+        "ldm r2!, {{r3}}",
+        "stm r0!, {{r3}}",
+        "b 0b",
+        "1:"
+    );
 }
 
 #[entry]
