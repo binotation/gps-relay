@@ -439,19 +439,33 @@ fn TIM1_UP_TIM16() {
 }
 
 #[pre_init]
-unsafe fn initialize_ram() {
+unsafe fn copy_flash_sections_to_ram() {
+    // Copy vector table to SRAM1
+    asm!(
+        "ldr r0, =__vector_table
+         ldr r1, =__evector_table
+         ldr r2, =__sivector_table
+         0:
+         cmp r1, r0
+         beq 1f
+         ldm r2!, {{r3}}
+         stm r0!, {{r3}}
+         b 0b
+         1:"
+    );
+
     // Copy .rodata to SRAM1
     asm!(
-        "ldr r0, =__srodata",
-        "ldr r1, =__erodata",
-        "ldr r2, =__sirodata",
-        "0:",
-        "cmp r1, r0",
-        "beq 1f",
-        "ldm r2!, {{r3}}",
-        "stm r0!, {{r3}}",
-        "b 0b",
-        "1:"
+        "ldr r0, =__srodata
+         ldr r1, =__erodata
+         ldr r2, =__sirodata
+         0:
+         cmp r1, r0
+         beq 1f
+         ldm r2!, {{r3}}
+         stm r0!, {{r3}}
+         b 0b
+         1:"
     );
 }
 

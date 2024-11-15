@@ -68,9 +68,8 @@ SECTIONS
   PROVIDE(_ram_end = ORIGIN(RAM) + LENGTH(RAM));
   PROVIDE(_stack_start = _ram_end);
 
-  /* ## Sections in FLASH */
   /* ### Vector table */
-  .vector_table ORIGIN(FLASH) :
+  .vector_table ORIGIN(RAM) :
   {
     __vector_table = .;
 
@@ -82,7 +81,7 @@ SECTIONS
     LONG(_stack_start & 0xFFFFFFF8);
 
     /* Reset vector */
-    KEEP(*(.vector_table.reset_vector)); /* this is the `__RESET_VECTOR` symbol */
+    LONG(LOADADDR(.text) + Reset - ADDR(.text)); /* Calculate as offset of Reset from load address of .text */
 
     /* Exceptions */
     __exceptions = .; /* start of exceptions */
@@ -91,12 +90,14 @@ SECTIONS
 
     /* Device specific interrupts */
     KEEP(*(.vector_table.interrupts)); /* this is the `__INTERRUPTS` symbol */
-  } > FLASH
+    __evector_table = .;
+  } > RAM AT > FLASH
+  __sivector_table = LOADADDR(.vector_table);
 
   PROVIDE(_stext = ADDR(.vector_table) + SIZEOF(.vector_table));
 
   /* ### .text */
-  .text _stext :
+  .text LOADADDR(.vector_table) + SIZEOF(.vector_table) :
   {
     __stext = .;
     *(.Reset);
@@ -271,9 +272,9 @@ ASSERT(ADDR(.vector_table) + SIZEOF(.vector_table) <= _stext, "
 ERROR(cortex-m-rt): The .text section can't be placed inside the .vector_table section
 Set _stext to an address greater than the end of .vector_table (See output of `nm`)");
 
-ASSERT(_stext > ORIGIN(FLASH) && _stext < ORIGIN(FLASH) + LENGTH(FLASH), "
+/*ASSERT(_stext > ORIGIN(FLASH) && _stext < ORIGIN(FLASH) + LENGTH(FLASH), "
 ERROR(cortex-m-rt): The .text section must be placed inside the FLASH memory.
-Set _stext to an address within the FLASH region.");
+Set _stext to an address within the FLASH region.");*/
 
 /* # Other checks */
 ASSERT(SIZEOF(.got) == 0, "
@@ -291,4 +292,3 @@ ASSERT(SIZEOF(.vector_table) <= 0x400, "
 There can't be more than 240 interrupt handlers. This may be a bug in
 your device crate, or you may have registered more than 240 interrupt
 handlers.");
-
